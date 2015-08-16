@@ -1,0 +1,38 @@
+---
+title: "Peer Assessment 2 - Storm Data Analysis"
+author: "Deizu"
+date: "Sunday, August 16, 2015"
+output: html_document
+---
+# Storm Data Analysis
+
+## Synopsis
+(10 sentence max.)
+
+## Data Processing
+### Loading Data
+The first step in processing our data is obtaining it.
+
+```{r obtaindata, echo=TRUE}
+# Check for existence of data directory within working directory
+if(!dir.exists("./data")){dir.create("./data/")}
+# Check for existence of data, download if not present and notify when done
+if(!file.exists("./data/data.bz2")){
+  fileurl <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+  download.file(fileurl,destfile="./data/data.bz2",mode='wb')
+  rm(fileurl)
+  message("Data is ready for loading!")
+} else {
+  message("Data already present and ready for loading!")
+}
+```
+
+Now that we have the data, we can load it into R for processing.
+
+```{r loaddata, echo=TRUE, cache=TRUE}
+raw <- read.csv("./data/data.bz2")
+```
+### Working with columns
+
+## Results
+(1 required, 2 max plots - panels are ok and count as 1 figure)
