@@ -33,6 +33,75 @@ Now that we have the data, we can load it into R for processing.
 raw <- read.csv("./data/data.bz2")
 ```
 ### Working with columns
+We need to work with the EVTYPE column, and it's a bit messy. NOAA recognizes 48 event types, and this column contains 985 distinct events. We'll try to whittle down and combine these as logically as possible.
+
+```{r subsetandfixdata, echo=TRUE, cache=TRUE}
+# Need gsubfn package for year extraction below
+library(gsubfn)
+# Copy the raw data over for manipulation
+data <- raw[,c(2,7:8,23:28)]
+# Convert to character for strapplyc
+data$BGN_DATE <- as.character(data$BGN_DATE)
+# Replace the BGN_DATE column with an extracted YEAR column
+data$BGN_DATE <- unlist(strapplyc(data$BGN_DATE,
+                      "[[:digit:]]{1,2}\\/[[:digit:]]{1,2}\\/([[:digit:]]{4})"))
+names(data)[1] <- c("YEAR")
+data$YEAR <- as.factor(data$YEAR)
+
+# Load the dplyr package
+library(dplyr)
+# Make the data a tbl for easier summarization
+data <- tbl_df(data)
+data <- group_by(data, YEAR)
+```
+
+
+```{r cleanevtypes, echo=TRUE, cache=TRUE}
+# Create frequency table of each messy EVTYPE
+cleanme <- as.data.frame(table(raw$EVTYPE))
+
+# Generate list of 48 official EVTYPEs based on NOAA documentation
+noaa_evtypes <- structure(
+  list(
+    EventName = structure(
+      c(1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 10L, 11L, 12L, 13L, 14L, 15L, 17L, 
+        18L, 16L, 19L, 20L, 21L, 22L, 23L, 24L, 25L, 26L, 27L, 28L, 29L, 30L,
+        31L, 32L, 33L, 34L, 35L, 36L, 37L, 38L, 39L, 40L, 41L, 42L, 43L, 44L, 
+        45L, 46L, 47L, 48L), 
+      .Label = c("Astronomical Low Tide", "Avalanche", "Blizzard", 
+                 "Coastal Flood", "Cold/Wind Chill", "Debris Flow", 
+                 "Dense Fog", "Dense Smoke", "Drought", "Dust Devil", 
+                 "Dust Storm", "Excessive Heat", "Extreme Cold/Wind Chill", 
+                 "Flash Flood", "Flood", "Freezing Fog", "Frost/Freeze", 
+                 "Funnel Cloud", "Hail", "Heat", "Heavy Rain", "Heavy Snow", 
+                 "High Surf", "High Wind", "Hurricane (Typhoon)", "Ice Storm", 
+                 "Lake-Effect Snow", "Lakeshore Flood", "Lightning", 
+                 "Marine Hail", "Marine High Wind", "Marine Strong Wind", 
+                 "Marine Thunderstorm Wind", "Rip Current", "Seiche", "Sleet", 
+                 "Storm Surge/Tide", "Strong Wind", "Thunderstorm Wind", 
+                 "Tornado", "Tropical Depression", "Tropical Storm", "Tsunami", 
+                 "Volcanic Ash", "Waterspout", "Wildfire", "Winter Storm", 
+                 "Winter Weather"),
+      class = "factor"), 
+    Designator = structure(
+      c(3L, 3L, 3L, 3L, 3L, 1L, 3L, 3L, 3L, 1L, 3L, 3L, 3L, 1L, 1L, 3L, 1L, 3L, 
+        1L, 3L, 1L, 3L, 3L, 3L, 3L, 3L, 3L, 3L, 1L, 2L, 2L, 2L, 2L, 3L, 3L, 3L, 
+        3L, 3L, 1L, 1L, 3L, 3L, 3L, 3L, 2L, 3L, 3L, 3L), 
+      .Label = c("C", "M", "Z"), 
+      class = "factor")
+    ), 
+  .Names = c("EventName", "Designator"), 
+  class = "data.frame", 
+  row.names = c(NA, -48L)
+  )
+
+# Check to see if any of the raw EVTYPEs are in the NOAA set
+cleanme[(cleanme$Var1 %in% noaa_evtypes$EventName),]
+```
+
 
 ## Results
 (1 required, 2 max plots - panels are ok and count as 1 figure)
+ 1 Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+ 2 Across the United States, which types of events have the greatest economic consequences?
+
