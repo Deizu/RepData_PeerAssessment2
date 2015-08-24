@@ -1,25 +1,33 @@
 ---
 title: "Peer Assessment 2 - Storm Data Analysis"
 author: "Deizu"
-date: "Sunday, August 16, 2015"
+date: "Sunday, August 23rd, 2015"
 output: html_document
 ---
 # Storm Data Analysis
 
 ## Synopsis
-(10 sentence max.)
+
+This is the 2nd peer analysis course project for the Coursera course Reproducible Research. The analysis takes raw data from NOAA and uses it to understand the estimated impact of major weather events on the population and economy in the US. 3 panel plots are included for reference.
 
 ## Data Processing
+
+```{r setoptions, echo=FALSE, cache=TRUE}
+options(scipen=999)
+knitr::opts_chunk$set(fig.width=12, fig.height=10, fig.path='figures/rr2-deizu-')
+```
+
 ### Loading Data
+
 The first step in processing our data is obtaining it.
 
-```{r obtaindata, echo=TRUE}
+```{r obtaindata, echo=TRUE, cache=TRUE}
 # Check for existence of data directory within working directory
 if(!dir.exists("./data")){dir.create("./data/")}
 # Check for existence of data, download if not present and notify when done
-if(!file.exists("./data/data.bz2")){
+if(!file.exists("./data/StormData.csv.bz2")){
   fileurl <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
-  download.file(fileurl,destfile="./data/data.bz2",mode='wb')
+  download.file(fileurl,destfile="./data/StormData.csv.bz2",mode='wb')
   rm(fileurl)
   message("Data is ready for loading!")
 } else {
@@ -27,17 +35,25 @@ if(!file.exists("./data/data.bz2")){
 }
 ```
 
+We'll load some libraries to help us achieve our goal.
+
+```{r libraries, echo=TRUE, cache=TRUE, message=FALSE, warning=FALSE}
+library(gsubfn) # For year extraction and replacement
+library(dplyr) # For tbl_df() function, etc
+library(knitr) # For the kable() function
+library(lubridate) # For CPI calculation assistance
+```
+
+
 Now that we have the data, we can load it into R for processing.
 
 ```{r loaddata, echo=TRUE, cache=TRUE}
-raw <- read.csv("./data/data.bz2")
+raw <- read.csv("./data/StormData.csv.bz2", header=TRUE)
 ```
 ### Working with columns
-We need to work with the EVTYPE column, and it's a bit messy. NOAA recognizes 48 event types, and this column contains 985 distinct events. We'll try to whittle down and combine these as logically as possible.
+We need to work with the EVTYPE column, and it's super messy. NOAA recognizes 48 event types, and this column contains 985 distinct event types. We'll try to whittle down and combine these as logically as possible. Let's start by getting our data into shape. We'll only need the damage-related columns after the date and event type. We'll simplify a bit by making the date into a year column.
 
 ```{r subsetandfixdata, echo=TRUE, cache=TRUE}
-# Need gsubfn package for year extraction below
-library(gsubfn)
 # Copy the raw data over for manipulation
 data <- raw[,c(2,7:8,23:28)]
 # Convert to character for strapplyc
@@ -46,19 +62,20 @@ data$BGN_DATE <- as.character(data$BGN_DATE)
 data$BGN_DATE <- unlist(strapplyc(data$BGN_DATE,
                       "[[:digit:]]{1,2}\\/[[:digit:]]{1,2}\\/([[:digit:]]{4})"))
 names(data)[1] <- c("YEAR")
+# Convert YEAR column back to factor variable
 data$YEAR <- as.factor(data$YEAR)
 
-# Load the dplyr package
-library(dplyr)
+
 # Make the data a tbl for easier summarization
 data <- tbl_df(data)
-data <- group_by(data, YEAR)
 ```
 
 
-```{r cleanevtypes, echo=TRUE, cache=TRUE}
+Ok, now we'll want to make sure we have a list we can validate against. NOAA provides its guidelines in a publication called the "NATIONAL WEATHER SERVICE INSTRUCTION 10-1605." You can access a PDF copy <a href="https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf">here</a>. Table 2.1.1 (Storm Data Event Table) on page 6 is replicated in R code below.
+
+```{r noaaevtypes, echo=TRUE, cache=TRUE}
 # Create frequency table of each messy EVTYPE
-cleanme <- as.data.frame(table(raw$EVTYPE))
+cleanme <- as.data.frame(table(toupper(data$EVTYPE)))
 
 # Generate list of 48 official EVTYPEs based on NOAA documentation
 noaa_evtypes <- structure(
@@ -94,14 +111,396 @@ noaa_evtypes <- structure(
   class = "data.frame", 
   row.names = c(NA, -48L)
   )
+```
 
-# Check to see if any of the raw EVTYPEs are in the NOAA set
-cleanme[(cleanme$Var1 %in% noaa_evtypes$EventName),]
+We'll want to see how our transformations change the data, so we'll begin by making the EVTYPE column a character class and set some initial counts down.
+
+
+```{r cleanevtypes0, echo=TRUE, cache=TRUE}
+# 0. Set up for cleaning
+     # Cleaning stat tracking
+     counts <- data.frame("Step"=character(0),"Unique"=numeric(0),"Total Observations"=numeric(0))
+     all <- unique(data$EVTYPE)
+     counts <- rbind(c("Raw Data Counts",length(all),nrow(data)))
+    
+     # Force upper case characters
+     data$EVTYPE <- toupper(as.character(data$EVTYPE))
+     
+     # Cleaning stat tracking
+     all <- unique(data$EVTYPE)
+     counts <- rbind(counts,c("Force Upper Case",length(all),nrow(data)))
+```
+
+We can remove any kind of summary or aggregate information from the dataset since it's not specific enough for our purposes.
+
+```{r cleanevtypes1, echo=TRUE, cache=TRUE}
+# 1. Exclude summary and monthly aggregate types
+     data[grep("summary|month|\\?|other|county", data$EVTYPE, ignore.case = 
+                 TRUE, value = FALSE),"EVTYPE"] <- "SUMMARY"
+     data <- filter(data, EVTYPE!="SUMMARY")  
+     
+     # Cleaning stat tracking
+     all <- unique(data$EVTYPE)
+     counts <- rbind(counts,c("Drop Summaries and Aggregates",length(all),
+                              nrow(data)))
+```
+
+We can also remove any sort of comparison word which might complicate consolidation. We're not removing the observations, just the words and extraneous spaces from the EVTYPE column. (We're also merging "marine" weather event types into their parent types.)
+
+```{r cleanevtypes2, echo=TRUE, cache=TRUE}
+# 2. Remove comparison words
+     data$EVTYPE <- gsub("abnormally|abnormal|bitter|early|late|extended|marine|
+                      minor|normal|prolonged|record|unseasonably|unseasonal|
+                      unusual|unusually|urban|very|and", "", ignore.case = T, 
+                      data$EVTYPE)
+     data$EVTYPE <- gsub("^\\s+|\\s+$","", data$EVTYPE, ignore.case = T)
+     data$EVTYPE <- gsub("^\\/+","", data$EVTYPE, ignore.case = T)
+     data$EVTYPE <- gsub("^\\s+|\\s+$","", data$EVTYPE, ignore.case = T)
+     all <- unique(data$EVTYPE)
+     counts <- rbind(counts,c("Strip Comparative Terms",length(all),nrow(data)))
+```
+
+Similarly, we can go ahead and ditch any non-weather words. Many of these relate to geographic features or causes of death or injury (without citing a specific weather event). We'll remove these from our dataset.
+
+```{r cleanevtypes3, echo=TRUE, cache=TRUE}
+# 3. Remove non-weather words
+     data[grep("accident|drowning|dam break|dam failure|^excessive$|exposure|
+               |mishap|metro|flag|southeast|remnants|slump|none|northern|
+               |no severe weather|mild pattern|^high$|^low$|^temperature[s]*$", 
+               data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"] <- ""
+     data <- filter(data, EVTYPE!="")
+
+     # Cleaning stat tracking
+     all <- unique(data$EVTYPE)
+     counts <- rbind(counts,c("Strip Non-Weather Terms",length(all),nrow(data)))
+```
+
+The majority of our work will be a <em>good faith</em> (READ: NON-EXPERT / LAYMAN / AMATEUR) attempt at placing the remaining unofficial EVTYPEs into an official bucket based on string matching and replacement. Referencing the guide linked above greatly aids the decision making process for how to recode these events.
+
+```{r cleanevtypes4, echo=TRUE, cache=TRUE}
+# 4. Cleaning with a series of regular expressions
+     data[grep("hurr|typh", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "HURRICANE (TYPHOON)"
+     data[grep("storm surge|high tide|blow-out|blowout|wave", data$EVTYPE, 
+            ignore.case = TRUE, value = FALSE),"EVTYPE"] <- "STORM SURGE/TIDE"
+     data[grep("^[^w]*torn[^w]*$", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "TORNADO"
+     data[grep("dust", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "DUST STORM"
+     data[grep("lightn|lighting|ligntning", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "LIGHTNING"
+     data[grep("thunder|tstorm|tstm|thundeer|tunderstorm|thunerstorm|thundestorm|
+            thuderstorm", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "THUNDERSTORM WIND"
+     data[grep("hail", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "HAIL"
+     data[grep("smoke", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "DENSE SMOKE"
+     data[grep("drought", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "DROUGHT"
+     
+     data[grep("excessive heat", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "EX.HE" # Temp Escape
+     data[grep("heat|dry|hot|high temp|warm", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "HEAT"
+     data[grep("EX.HE", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "EXCESSIVE HEAT" # Temp Unescape
+     
+     data[grep("excessive wet", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "HEAVY RAIN"
+     data[grep("surf|swells|seas|high water|high waves", data$EVTYPE, 
+            ignore.case = TRUE, value = FALSE),"EVTYPE"] <- "HIGH SURF"
+     data[grep("spou", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "WATERSPOUT"
+     data[grep("blizz", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "BLIZZARD"
+     data[grep("avalanc", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "AVALANCHE"
+     data[grep("high wind|high  wind|burst|gust|gradient|strong wind", data$EVTYPE, 
+            ignore.case = TRUE, value = FALSE),"EVTYPE"] <- "HIGH WIND"
+     data[grep("fire", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "WILDFIRE"
+     data[grep("heavy rain|heavy mix|heavy precip|heavy shower|mixed preci", 
+            data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "HEAVY RAIN"
+     
+     data[grep("heavy snow", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "HEAVY SNW" #Hide
+     data[grep("/snow|snow/|winter storm", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "WINTER STORM"
+     data[grep("snow|winter mix|winter weather|wintery|wintry", data$EVTYPE, 
+            ignore.case = TRUE, value = FALSE),"EVTYPE"] <- "WINTER WEATHER"
+     data[grep("heavy snw", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "HEAVY SNOW" #Unhide
+     
+     data[grep("funnel|wall cloud", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "FUNNEL CLOUD"
+     data[grep("tropical storm", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "TROPICAL STORM"
+     data[grep("slide", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "DEBRIS FLOW"
+     data[grep("freeze|frost", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "FROST/FREEZE"
+     data[grep("ice|icy|glaze", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "ICE STORM"
+     data[grep("sleet", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "SLEET"
+     data[grep("rip curr", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "RIP CURRENT"
+     
+     data[grep("freezing fog", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "FFFFFF" #Hide
+     data[grep("freezing|black ice", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "WINTER WEATHER"
+     data[grep("fog|vog", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "DENSE FOG"
+     data[grep("FFFFFF", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "FREEZING FOG" #Unhide
+     
+     data[grep("fog", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "DENSE FOG"
+     data[grep("volca", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "VOLCANIC ASH"
+     data[grep("precipitation|extremely wet|rain|wet", data$EVTYPE, 
+            ignore.case = TRUE, value = FALSE),"EVTYPE"] <- "HEAVY RAIN"
+     
+     data[grep("extreme", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "ECWC" #Hide
+     data[grep("cold|cool|low temp|low wind|wind chill", data$EVTYPE, 
+            ignore.case = TRUE, value = FALSE),"EVTYPE"] <- "COLD/WIND CHILL"
+     data[grep("ECWC", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "EXTREME COLD/WIND CHILL" #Hide
+     
+     #Flood Disambiguation
+     data[grep("beach|coast|cstl|tidal flood", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "CSTLFLD" #Hide
+     data[grep("flash", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "FLSHFLD" #Hide
+     data[grep("flash", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "LKSHRFLD" #Hide
+     data[grep("flood|fld|small|rising water", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "FLOOD" #Main
+     data[grep("CSTLFLD", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "COASTAL FLOOD" #Unhide
+     data[grep("FLSHFLD", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "FLASH FLOOD" #Unhide
+     data[grep("LKSHRFLD", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "LAKESHORE FLOOD" #Unhide
+     
+     #Wind Disambiguation
+     data[grep("COLD/WIND CHILL", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <- "C.WC" #Hide
+     data[grep("EXTREME COLD/WIND CHILL", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "EC.WC" #Hide
+     data[grep("HIGH WIND", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <-  "HGH.WND" #Hide
+     data[grep("STRONG WIND", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "STRNG.WND"  #Hide
+     data[grep("THUNDERSTORM WIND", data$EVTYPE, ignore.case = TRUE, value = FALSE),
+       "EVTYPE"] <-  "TST.WND" #Hide
+     data[grep("WIND|HGH.WND|^WND$|TURBULENCE", data$EVTYPE, ignore.case = TRUE, 
+            value = FALSE),"EVTYPE"] <- "HIGH WIND"  #Main & Unhide
+     data[grep("C.WC", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "COLD/WIND CHILL" #Unhide
+     data[grep("EC.WC", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "EXTREME COLD/WIND CHILL" #Unhide
+     data[grep("STRNG.WND", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <- "STRONG WIND"  #Unhide
+     data[grep("TST.WND", data$EVTYPE, ignore.case = TRUE, value = FALSE),"EVTYPE"
+       ] <-  "THUNDERSTORM WIND" #Unhide
+      
+     # Cleaning stat tracking
+     all <- unique(data$EVTYPE)
+     counts <- rbind(counts,c("RegEx Consolidation",length(all),nrow(data)))
+```
+
+Let's pause look at how the steps we just took had an impact on the data we are analyzing.
+
+```{r displaycounts, echo=TRUE, cache=TRUE}
+kable(counts,col.names=c("Step","Unique","Total Observations"))
+```
+
+We've managed to keep **`r counts[6,3]`** observations, meaning our cleanup effort only removed **`r as.integer(counts[1,3])-as.integer(counts[6,3])`** observations while crunching everything from **`r counts[1,2]`** into **`r counts[6,2]`** EVTYPEs.
+
+Now we need to make the damage understandable. Page 12 of the document I linked to above indicates that "Alphabetical characters used to signify magnitude include 'K' for thousands, 'M' for millions, and 'B' for billions." We can see that the CROPDMGEXP and PROPDMGEXP columns both use these kinds of values.
+
+```{r damageexponents, echo=TRUE, cache=TRUE}
+# Force capitalization of letter exponents
+     data$PROPDMGEXP <- toupper(data$PROPDMGEXP)
+     data$CROPDMGEXP <- toupper(data$CROPDMGEXP)
+
+# Find out how many observations don't have the expected exponents
+     length(grep("[^HKMB]", data$PROPDMGEXP, ignore.case = T, value = TRUE))
+     length(grep("[^HKMB]", data$CROPDMGEXP, ignore.case = T, value = TRUE))
+
+# Find out how many observations do have the expected exponents
+     length(grep("[HKMB]", data$PROPDMGEXP, ignore.case = T, value = TRUE))
+     length(grep("[HKMB]", data$CROPDMGEXP, ignore.case = T, value = TRUE))
+
+# Replace unexpected exponents with blanks
+     data[grep("[^HKMB]", data$PROPDMGEXP, ignore.case = T, value = F),
+          "PROPDMGEXP"] <- ""
+     data[grep("[^HKMB]", data$CROPDMGEXP, ignore.case = T, value = F),
+          "CROPDMGEXP"] <- ""
+
+# Exclude rows with no exponent in either PROPDMGEXP or CROPDMGEXP column
+     dataexp <- filter(data,PROPDMGEXP!=""|CROPDMGEXP!="")
+
+# Substitute numerical values for the character exponents
+     dataexp$PROPDMGEXP <- gsub("H","100",dataexp$PROPDMGEXP)
+     dataexp$PROPDMGEXP <- gsub("K","1000",dataexp$PROPDMGEXP)
+     dataexp$PROPDMGEXP <- gsub("M","1000000",dataexp$PROPDMGEXP)
+     dataexp$PROPDMGEXP <- gsub("B","1000000000",dataexp$PROPDMGEXP)
+     dataexp$CROPDMGEXP <- gsub("H","100",dataexp$CROPDMGEXP)
+     dataexp$CROPDMGEXP <- gsub("K","1000",dataexp$CROPDMGEXP)
+     dataexp$CROPDMGEXP <- gsub("M","1000000",dataexp$CROPDMGEXP)
+     dataexp$CROPDMGEXP <- gsub("B","1000000000",dataexp$CROPDMGEXP)
+
+# Multiply the damage estimate by the exponent to get the historical value
+     dataexp$HISTPROPDMG <- (as.numeric(dataexp$PROPDMG) * 
+                               as.numeric(dataexp$PROPDMGEXP))
+     dataexp$HISTCROPDMG <- (as.numeric(dataexp$CROPDMG) * 
+                               as.numeric(dataexp$CROPDMGEXP))
 ```
 
 
-## Results
-(1 required, 2 max plots - panels are ok and count as 1 figure)
- 1 Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
- 2 Across the United States, which types of events have the greatest economic consequences?
+## Analysis
+### US Weather Events Causing Population Harm
 
+```{r population, echo=TRUE, cache=TRUE}
+popdmg <- dataexp[,1:5]
+popdmg <- group_by(popdmg, EVTYPE)
+popdmgsummary <- summarize(popdmg, "INJURIES"=sum(INJURIES), "FATALITIES"=sum(FATALITIES))
+topinj <- arrange(popdmgsummary, desc(INJURIES))[1:10,c(1,2)]
+topfat <- arrange(popdmgsummary, desc(FATALITIES))[1:10,c(1,3)]
+
+par(mfrow=c(1,2))
+barplot(as.vector(topfat$FATALITIES), 
+        names.arg=(topfat$EVTYPE),
+        main="Fatalities",
+        col="red",
+        cex.names=0.75,
+        las=3)
+barplot(as.vector(topinj$INJURIES), 
+        names.arg=(topinj$EVTYPE), 
+        main="Injuries",
+        col="blue",
+        cex.names=0.75,
+        las=3)
+
+kable(topfat)
+kable(topinj)
+```
+
+We've got a pretty good ranking graphed and tabled for harm to the population. Let's move on to harm in a financial sense.
+
+### US Weather Events Causing Economic Harm
+
+```{r economy, echo=TRUE, cache=TRUE}
+ecdmg <- dataexp[,c(1,3,10,11)]
+ecdmg <- group_by(ecdmg, EVTYPE)
+ecdmgsummary <- summarize(ecdmg, 
+                          "PROPERTY"=sum(as.numeric(HISTPROPDMG),na.rm=T), 
+                          "CROP"=sum(as.numeric(HISTCROPDMG),na.rm=T)
+                          )
+topprop <- arrange(ecdmgsummary, desc(PROPERTY))[1:10,c(1,2)]
+topcrop <- arrange(ecdmgsummary, desc(CROP))[1:10,c(1,3)]
+
+par(mfrow=c(1,2))
+barplot(as.vector(topprop$PROPERTY), 
+        names.arg=(topprop$EVTYPE),
+        main="Property Damage",
+        ylab="Estimated Cost in USD",
+        col="green",
+        cex.names=0.75,
+        las=3)
+barplot(as.vector(topcrop$CROP), 
+        names.arg=(topcrop$EVTYPE), 
+        main="Crop Damage",
+        ylab="Estimated Cost in USD",
+        col="purple",
+        cex.names=0.75,
+        las=3)
+
+kable(topprop)
+kable(topcrop)
+```
+
+### US Dollar Normalization
+
+It doesn't make sense to compare 1950 dollars to 2011 dollars, so I'll normalize using an adjustment exponent created by comparing the average Consumer Price Index between years. (We'll use a CSV provided by the Federal Reserve Bank of St. Louis via the Bureau of Labor Statistics as our source data.) Then we'll change everything into 2015 dollars for easier comprehension.
+
+```{r cpi, echo=TRUE, cache=TRUE}
+# Get the CPI data if it's not present in the data subdirectory
+if(!file.exists("./data/CPI.csv")){
+  fileurl <- "http://research.stlouisfed.org/fred2/data/CPIAUCSL.csv"
+  download.file(fileurl,destfile="./data/CPI.csv",mode='wb')
+  rm(fileurl)
+  message("CPI data is ready for loading!")
+} else {
+  message("CPI data already present and ready for loading!")
+}
+# Load the CPI data
+month_cpi <-  read.csv("./data/CPI.csv",
+                       header = TRUE)
+month_cpi$cpi_year <- year(month_cpi$DATE)
+annual_cpi <- month_cpi %>% group_by(cpi_year) %>% summarize(cpi = mean(VALUE))
+annual_cpi$adjustment <- 
+  annual_cpi$cpi/annual_cpi$cpi[annual_cpi$cpi_year == 2015]
+cpi <- annual_cpi[c(4:65,69),c(1,3)]
+names(cpi) <- c("YEAR","ADJUSTMENT")
+cpi$YEAR <- as.character(cpi$YEAR)
+```
+
+```{r dollarnorm, echo=TRUE, cache=TRUE}
+# Use the factor to adjust the yearly amounts
+adjecdmg <- dataexp[,c(1,3,10,11)]
+adjecdmg$YEAR <- as.character(adjecdmg$YEAR)
+aedo <- group_by(adjecdmg, YEAR, EVTYPE)
+adjecdmg <- summarize(aedo, "PROPERTY"=sum(as.numeric(HISTPROPDMG),na.rm=T),
+                            "CROP"=sum(as.numeric(HISTCROPDMG),na.rm=T)
+                      )
+adjecdmg <- left_join(adjecdmg,cpi,by=c("YEAR"="YEAR"))
+adjecdmg$PROPERTY <- adjecdmg$PROPERTY * adjecdmg$ADJUSTMENT
+adjecdmg$CROP <- adjecdmg$CROP * adjecdmg$ADJUSTMENT
+```
+
+```{r redoecon, echo=TRUE, cache=TRUE}
+# Reperform analysis
+adjecdmg <- group_by(adjecdmg, EVTYPE)
+adjecdmgsummary <- summarize(adjecdmg, 
+                          "PROPERTY"=sum(PROPERTY,na.rm=T), 
+                          "CROP"=sum(CROP,na.rm=T))
+topprop <- arrange(adjecdmgsummary, desc(PROPERTY))[1:10,c(1,2)]
+topcrop <- arrange(adjecdmgsummary, desc(CROP))[1:10,c(1,3)]
+
+par(mfrow=c(1,2))
+barplot(as.vector(topprop$PROPERTY), 
+        names.arg=(topprop$EVTYPE),
+        main="Normalized Property Damage",
+        ylab="Estimated Cost in Adjusted USD",
+        col="violet",
+        cex.names=0.75,
+        las=3)
+barplot(as.vector(topcrop$CROP), 
+        names.arg=(topcrop$EVTYPE), 
+        main="Normalized Crop Damage",
+        ylab="Estimated Cost in Adjusted USD",
+        col="orange",
+        cex.names=0.75,
+        las=3)
+
+kable(topprop)
+kable(topcrop)
+```
+
+## Results
+ 1. Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+As born out in the analysis above, Tornados, Floods, and Storm Winds respectively account for the most Fatalities and Injuries.
+
+ 2. Across the United States, which types of events have the greatest economic consequences?
+
+Using raw historical dollars, Floods, Hurricanes, and Tornados caused the most property damage, respectively. Using the same historical dollars, Droughts, Floods, and Hurricanes caused the most crop damage, respectively.
+
+Adjusting to normalize the historical data into 2015 US Dollars, we see that Floods, Hurricanes, and Tidal Surges caused the most property damage, respectively, and that Droughts, Floods, and Hurricanes still caused the most crop damage, respectively.
